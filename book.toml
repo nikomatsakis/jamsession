@@ -1,0 +1,5 @@
+[book]
+title = "Pirouni"
+authors = ["Niko Matsakis"]
+language = "en"
+src = "md"
