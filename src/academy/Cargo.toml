@@ -1,0 +1,29 @@
+[package]
+name = "academy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+acpr = "0.4.0"
+agent-client-protocol = "0.13.1"
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6.0.0"
+nix = { version = "0.31.3", features = ["signal", "process"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.23.2", features = ["v4"] }
+
+[[bin]]
+name = "mock-agent"
+path = "tests/helpers/mock_agent.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+snapbox = { version = "1.2.1", features = ["cmd", "term-svg"] }

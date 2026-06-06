@@ -2,53 +2,63 @@ use std::path::PathBuf;
 
 use academy::daemon::Daemon;
 use academy::state::DaemonState;
+use clap::{Parser, Subcommand};
 
-#[derive(Debug)]
+#[derive(Parser)]
+#[command(name = "academy", about = "Agent daemon for managing ACP sessions")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
 enum Command {
-    Daemon { state_path: Option<PathBuf> },
+    /// Run the daemon (default)
+    Daemon {
+        /// Path to the state file
+        #[arg(long)]
+        state_path: Option<PathBuf>,
+    },
+    /// Run as stdio ACP client (connects to daemon)
     Acp,
 }
 
-fn parse_args() -> Command {
-    let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(|s| s.as_str()) {
-        Some("daemon") => Command::Daemon {
-            state_path: args.get(2).map(PathBuf::from),
-        },
-        Some("acp") => Command::Acp,
-        Some("--help") | Some("-h") => {
-            print_help();
-            std::process::exit(0);
-        }
-        _ => {
-            // Default to daemon mode
-            Command::Daemon { state_path: None }
-        }
-    }
-}
+/// T042+T043: Set up file-based logging to ~/.academy/daemon.log
+/// and per-session routing to ~/.academy/sessions/<id>/session.log
+fn init_daemon_logging() {
+    use academy::logging::SessionFileLayer;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
 
-fn print_help() {
-    eprintln!(
-        "academy - Agent daemon for managing ACP sessions\n\
-         \n\
-         USAGE:\n\
-         \x20   academy [COMMAND]\n\
-         \n\
-         COMMANDS:\n\
-         \x20   daemon    Run the daemon (default)\n\
-         \x20   acp       Run as stdio ACP client (connects to daemon)\n\
-         \n\
-         OPTIONS:\n\
-         \x20   -h, --help    Show this help message"
-    );
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".academy");
+
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "daemon.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Leak the guard so it lives for the process lifetime
+    std::mem::forget(_guard);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+        .with(SessionFileLayer::new())
+        .init();
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-
-    match parse_args() {
+    let cli = Cli::parse();
+    match cli.command.unwrap_or(Command::Daemon { state_path: None }) {
         Command::Daemon { state_path } => {
+            init_daemon_logging();
+
             let state_path = state_path.unwrap_or_else(DaemonState::state_path);
             let daemon = Daemon::new(&state_path);
 
@@ -66,6 +76,7 @@ async fn main() {
             }
         }
         Command::Acp => {
+            tracing_subscriber::fmt::init();
             run_acp_mode().await;
         }
     }

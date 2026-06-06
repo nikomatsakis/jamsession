@@ -154,6 +154,45 @@ Integration test `tests/integration/agent_lifecycle.rs`:
 
 ---
 
+## Phase 6: Hardening
+
+**Purpose**: Correct deviations from spec, fill behavioral gaps found during audit
+
+### Lifecycle Fidelity
+
+- [x] T036 [US4] Implement pipe-silence-based quiescence: reset the 10s timer on every message through the bridge, only transition to `Quiescent` after true silence in `src/bridge.rs` and `src/session.rs`
+- [x] T037 [US4] Call `disconnect_client` on connection close: after `Agent.builder().connect_to()` returns in the per-client task, identify the session and trigger idle countdown in `src/daemon.rs`
+- [x] T038 [US4] Implement auto-respawn on agent crash: detect unexpected agent connection termination, respawn once, re-install bridge, notify client of interruption in `src/session.rs`
+
+### One-Client-Per-Session
+
+- [x] T039 [US1] Actually disconnect old client on new `session/load`/`session/resume`: store a cancellation handle per client and abort it when a second client connects in `src/session.rs`
+
+### History Replay
+
+- [x] T040 [US1] Forward agent's replay notifications during `session/load` (agent dead): collect notifications emitted by the agent between sending `session/load` and receiving the response, relay them to client before installing the bridge in `src/session.rs`
+
+### Session ID Alignment
+
+- [x] T041 [US1] Use agent-returned session ID as canonical: persist and return the agent's `session_id` from `session/new` rather than generating a separate daemon-side ID in `src/session.rs`
+
+### Logging
+
+- [x] T042 [P] Implement file-based daemon logging to `~/.academy/daemon.log` with rotation in `src/main.rs`
+- [x] T043 [P] Implement per-session log files at `~/.academy/sessions/<id>/session.log` using tracing spans in `src/logging.rs`
+
+**Tests to write and pass**:
+
+- T036: integration test — send prompt, disconnect client mid-turn, verify agent is NOT killed while output is still flowing
+- T037: integration test — create session, drop client connection, verify `disconnect_client` fires and lifecycle transitions begin
+- T038: integration test — create session, kill agent process externally, verify daemon respawns it and client can continue
+- T039: integration test — two clients `session/load` same session, verify first client's connection is terminated
+- T040: integration test — create session, send prompts, kill agent, second client `session/load` → verify replay notifications arrive before response
+
+**Checkpoint**: Lifecycle timers are behaviorally correct, client disconnection is properly detected, replay works end-to-end, single-client enforcement closes old connections.
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -163,6 +202,7 @@ Integration test `tests/integration/agent_lifecycle.rs`:
 - **User Story 1 (Phase 3)**: Depends on Foundational — this is the MVP
 - **User Story 4 (Phase 4)**: Depends on Foundational; integrates with US1 (session/agent lifecycle)
 - **Polish (Phase 5)**: Depends on all user stories being complete
+- **Hardening (Phase 6)**: Depends on Phase 3 + 4; correctness fixes for lifecycle and replay
 
 ### User Story Dependencies
 

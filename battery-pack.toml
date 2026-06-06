@@ -1,0 +1,13 @@
+version = 1
+
+[[battery-pack]]
+name = "cli"
+features = ["default"]
+
+[[battery-pack.managed-deps]]
+name = "clap"
+version = "4"
+
+[[battery-pack.managed-deps]]
+name = "snapbox"
+version = "1.2.1"
