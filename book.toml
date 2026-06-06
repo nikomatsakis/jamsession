@@ -3,3 +3,9 @@ title = "Academy"
 authors = ["Niko Matsakis"]
 language = "en"
 src = "md"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
