@@ -1,10 +1,10 @@
-# What is Academy?
+# What is Jamsession?
 
-Academy is a daemon that manages the lifecycle of AI coding agents using the [Agent Client Protocol (ACP)](https://github.com/anthropics/agent-client-protocol). It sits between editor clients and agent processes, providing:
+Jamsession is a daemon that manages the lifecycle of AI coding agents using the [Agent Client Protocol (ACP)](https://github.com/anthropics/agent-client-protocol). It sits between editor clients and agent processes, providing:
 
 - **Session persistence** -- Agents can be killed and respawned without losing context. The agent's own session store persists across spin-downs, and the daemon replays history on reconnect.
 - **Resource efficiency** -- Agent processes are ephemeral. They spin down after idle periods and spin back up on demand via `session/load`.
-- **Single entry point** -- Clients connect to one Unix socket (`~/.academy/daemon.sock`). The daemon handles spawning, bridging, and lifecycle for all sessions.
+- **Single entry point** -- Clients connect to one Unix socket (`~/.jamsession/daemon.sock`). The daemon handles spawning, bridging, and lifecycle for all sessions.
 - **One client per session** -- When a new client takes over a session, the previous one is disconnected automatically.
 
 ## How it works

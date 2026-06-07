@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # https://github.com/rust-lang/rustfmt
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+  # https://doc.rust-lang.org/clippy/
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets --all-features --keep-going -- -D warnings
+  # Dedicated warnings check so test failures are visible even with warnings
+  warnings:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-Dwarnings"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --all-targets --all-features --keep-going
+  # Validate docs build with docsrs cfg on nightly
+  docsrs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings --cfg docsrs"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo doc --no-deps --all-features
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, nightly]
+        flags: ["--all-features", "--no-default-features"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-build
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          flags: ${{ matrix.flags }}
+  # https://github.com/taiki-e/cargo-hack
+  features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@59012be0884e296ca2da49b530610e72c49039ad # v2.81.6
+        with:
+          tool: cargo-hack
+      - run: cargo hack check --feature-powerset --depth 2 --no-dev-deps
+  # Ensure Cargo.lock is in sync with Cargo.toml
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo update --workspace --locked
+  # Ensure minimum dependency versions work (https://doc.rust-lang.org/cargo/reference/resolver.html)
+  minimal-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo +nightly generate-lockfile -Z minimal-versions
+      - run: cargo +stable check --workspace --all-features --locked --keep-going
+  ci-pass:
+    needs: [fmt, clippy, warnings, docsrs, build, features, lockfile, minimal-versions]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'

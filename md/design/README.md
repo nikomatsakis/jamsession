@@ -1,10 +1,10 @@
 # Design and implementation
 
-This section documents the internal architecture of Academy for contributors and anyone curious about how the daemon works.
+This section documents the internal architecture of Jamsession for contributors and anyone curious about how the daemon works.
 
 ## Architecture overview
 
-Academy is structured as a single-process daemon with several cooperating components:
+Jamsession is structured as a single-process daemon with several cooperating components:
 
 ```
 ┌─────────────────────────────────────────────────────────┐

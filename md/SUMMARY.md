@@ -1,6 +1,6 @@
 # Summary
 
-- [What is Academy?](./README.md)
+- [What is Jamsession?](./README.md)
 - [Quick start guide](./quickstart.md)
 
 # Reference

@@ -40,7 +40,7 @@ impl DaemonState {
     pub fn state_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".academy")
+            .join(".jamsession")
             .join("state.json")
     }
 

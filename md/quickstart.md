@@ -11,23 +11,23 @@
 cargo build --release
 ```
 
-The binary is at `target/release/academy`.
+The binary is at `target/release/jamsession`.
 
 ## Running the daemon
 
 Start the daemon directly:
 
 ```sh
-academy daemon
+jamsession daemon
 ```
 
 Or let it auto-start -- when you run in ACP client mode and the daemon isn't running, it spawns automatically:
 
 ```sh
-academy acp
+jamsession acp
 ```
 
-The daemon listens on `~/.academy/daemon.sock` and logs to `~/.academy/daemon.log`.
+The daemon listens on `~/.jamsession/daemon.sock` and logs to `~/.jamsession/daemon.log`.
 
 ## Creating a session
 
@@ -63,10 +63,10 @@ To reconnect without receiving the history replay (e.g., your client already has
 
 ## ACP client mode
 
-`academy acp` bridges stdin/stdout to the daemon socket, so you can use it as a drop-in ACP transport from any tool that expects stdio-based ACP:
+`jamsession acp` bridges stdin/stdout to the daemon socket, so you can use it as a drop-in ACP transport from any tool that expects stdio-based ACP:
 
 ```sh
-academy acp
+jamsession acp
 ```
 
 If the daemon isn't running, it will be started automatically.

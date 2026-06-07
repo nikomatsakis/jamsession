@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use academy::daemon::Daemon;
-use academy::state::DaemonState;
+use jamsession::daemon::Daemon;
+use jamsession::state::DaemonState;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "academy", about = "Agent daemon for managing ACP sessions")]
+#[command(name = "jamsession", about = "Agent daemon for managing ACP sessions")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -23,17 +23,17 @@ enum Command {
     Acp,
 }
 
-/// T042+T043: Set up file-based logging to ~/.academy/daemon.log
-/// and per-session routing to ~/.academy/sessions/<id>/session.log
+/// T042+T043: Set up file-based logging to ~/.jamsession/daemon.log
+/// and per-session routing to ~/.jamsession/sessions/<id>/session.log
 fn init_daemon_logging() {
-    use academy::logging::SessionFileLayer;
+    use jamsession::logging::SessionFileLayer;
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
     let log_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".academy");
+        .join(".jamsession");
 
     let _ = std::fs::create_dir_all(&log_dir);
 

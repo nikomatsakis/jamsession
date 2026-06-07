@@ -3,29 +3,6 @@
 version = 4
 
 [[package]]
-name = "academy"
-version = "0.1.0"
-dependencies = [
- "acpr",
- "agent-client-protocol",
- "chrono",
- "clap",
- "dirs",
- "nix",
- "serde",
- "serde_json",
- "snapbox",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "acpr"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1520,6 +1497,29 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jamsession"
+version = "0.1.0"
+dependencies = [
+ "acpr",
+ "agent-client-protocol",
+ "chrono",
+ "clap",
+ "dirs",
+ "nix",
+ "serde",
+ "serde_json",
+ "snapbox",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "jni"

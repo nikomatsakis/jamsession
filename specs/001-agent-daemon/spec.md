@@ -12,7 +12,7 @@
 
 ### User Story 1 - Connect and Start/Resume a Session (Priority: P1)
 
-A developer's editor launches a client executable that connects to the daemon via a Unix domain socket (`~/.academy/daemon.sock`). If the daemon isn't running, the client spawns it first. The daemon is the sole ACP endpoint — the client never communicates directly with an agent. The daemon answers `initialize` (from capabilities cache, spawning a temp agent on first-ever connect) and `session/list` (from its persistent state file), then on `session/new` or `session/load`, spawns (or reuses) an agent for the requested directory.
+A developer's editor launches a client executable that connects to the daemon via a Unix domain socket (`~/.jamsession/daemon.sock`). If the daemon isn't running, the client spawns it first. The daemon is the sole ACP endpoint — the client never communicates directly with an agent. The daemon answers `initialize` (from capabilities cache, spawning a temp agent on first-ever connect) and `session/list` (from its persistent state file), then on `session/new` or `session/load`, spawns (or reuses) an agent for the requested directory.
 
 **Why this priority**: This is the core interaction model — without session lifecycle management, nothing else works.
 
@@ -59,10 +59,10 @@ The agent process is ephemeral — it only runs when there's work to do. A conne
 
 - Q: What is the idle timeout duration before killing an agent after quiescence? → A: 15 minutes default, configurable at startup (overridable for integration tests)
 - Q: What should the daemon do when an agent dies unexpectedly mid-turn (client connected)? → A: Notify the client and auto-respawn once (single retry); if it crashes again, report error to client
-- Q: Where should the daemon log diagnostic information? → A: Log file at `~/.academy/daemon.log`
+- Q: Where should the daemon log diagnostic information? → A: Log file at `~/.jamsession/daemon.log`
 - Q: How does the daemon shut down? → A: Runs indefinitely once started; kill the process to stop it
 - Q: Should the Unix socket have restricted permissions? → A: Yes — created with `0600` (owner-only access)
-- Q: How is log verbosity controlled? → A: `~/.academy/config.toml` with `log_level` setting; `debug` = lifecycle events, `trace` = every ACP message. Per-session logs routed via tracing spans (session ID / cwd) into `~/.academy/sessions/<session-id>/session.log`
+- Q: How is log verbosity controlled? → A: `~/.jamsession/config.toml` with `log_level` setting; `debug` = lifecycle events, `trace` = every ACP message. Per-session logs routed via tracing spans (session ID / cwd) into `~/.jamsession/sessions/<session-id>/session.log`
 
 ## Requirements *(mandatory)*
 
@@ -71,14 +71,14 @@ The agent process is ephemeral — it only runs when there's work to do. A conne
 **Daemon & Session Management**
 
 - **FR-001**: System MUST implement the Agent Client Protocol (ACP) for communication between daemon, agents, and clients.
-- **FR-002**: System MUST run as a background daemon, listening on a Unix domain socket at a well-known path (e.g., `~/.academy/daemon.sock`). The socket MUST be created with `0600` permissions (owner-only access).
+- **FR-002**: System MUST run as a background daemon, listening on a Unix domain socket at a well-known path (e.g., `~/.jamsession/daemon.sock`). The socket MUST be created with `0600` permissions (owner-only access).
 - **FR-003**: System MUST auto-start on first client connect — if the socket doesn't exist, the client spawns the daemon and waits for it. Once started, the daemon runs indefinitely until its process is killed (no auto-exit).
 - **FR-004**: System MUST associate each agent session with a specific working directory.
 - **FR-005**: System MUST terminate the agent process (if running) and remove the session when the working directory no longer exists.
 
 **Daemon Startup & Persistent State**
 
-- **FR-006**: The daemon MUST persist minimal state to `~/.academy/state.json`: for each known session, the session ID and working directory.
+- **FR-006**: The daemon MUST persist minimal state to `~/.jamsession/state.json`: for each known session, the session ID and working directory.
 - **FR-007**: On startup, the daemon MUST load its state file and inspect each session's `cwd` for validity. No temp agent is spawned at startup.
 - **FR-008**: The daemon MUST cache agent capabilities lazily: on the first client `initialize` with a given `clientCapabilities` set, spawn a temp agent, forward the `initialize`, cache the response, kill the temp agent. Subsequent clients with the same capabilities get the cached response.
 - **FR-009**: The state file MUST be updated when sessions are created or removed. Accepted risk: the state file may become stale if sessions are created/deleted outside the daemon's knowledge.
@@ -106,15 +106,15 @@ The agent process is ephemeral — it only runs when there's work to do. A conne
 
 **Configuration**
 
-- **FR-028**: The daemon MUST read configuration from `~/.academy/config.toml` on startup (creating a default if absent).
+- **FR-028**: The daemon MUST read configuration from `~/.jamsession/config.toml` on startup (creating a default if absent).
 - **FR-029**: The configuration MUST support a `log_level` setting with values: `error`, `warn`, `info`, `debug`, `trace`. Default: `info`.
   - `debug`: major lifecycle events (agent spawn/kill, client connect/disconnect, session create/remove, idle timeout fire).
   - `trace`: all of `debug` plus every ACP message flowing through the daemon (full JSON-RPC lines in both directions).
 
 **Observability**
 
-- **FR-030**: The daemon MUST log to `~/.academy/daemon.log` at the level configured in `config.toml`.
-- **FR-031**: The daemon MUST also write per-session logs to `~/.academy/sessions/<session-id>/session.log`. Log events emitted within a tracing span that carries the session ID or working directory MUST be routed to the corresponding session log file (in addition to the main daemon log).
+- **FR-030**: The daemon MUST log to `~/.jamsession/daemon.log` at the level configured in `config.toml`.
+- **FR-031**: The daemon MUST also write per-session logs to `~/.jamsession/sessions/<session-id>/session.log`. Log events emitted within a tracing span that carries the session ID or working directory MUST be routed to the corresponding session log file (in addition to the main daemon log).
 
 **Bridging**
 
@@ -127,13 +127,13 @@ The agent process is ephemeral — it only runs when there's work to do. A conne
 
 ### Key Entities
 
-- **Daemon**: The long-running background process. Listens on a Unix socket, manages sessions and agent lifecycle. Acts as the sole ACP endpoint for clients and as the ACP client for agents. Persists minimal state to `~/.academy/state.json`.
+- **Daemon**: The long-running background process. Listens on a Unix socket, manages sessions and agent lifecycle. Acts as the sole ACP endpoint for clients and as the ACP client for agents. Persists minimal state to `~/.jamsession/state.json`.
 - **Session**: A daemon-side record (in state file) associating a working directory with a session ID. The agent's own internal store (in `~/.claude`) holds the actual conversation history.
 - **Agent Process**: An ephemeral process that manages its own session persistence. Reconstructs state via `session/load` replay from its internal store on each spin-up.
 - **In-Memory Buffer**: The daemon's recording of all ACP messages on the agent's pipe during its current lifetime. Used for late-joining client catch-up. Discarded on agent death.
 - **Client Connection**: A transient ACP connection from an editor/terminal to the daemon via Unix socket. One client per session at a time.
-- **State File**: `~/.academy/state.json` — persists session registry across daemon restarts. May become stale if sessions are manipulated outside the daemon.
-- **Config File**: `~/.academy/config.toml` — user-editable daemon configuration (log level, etc.). Read once at startup.
+- **State File**: `~/.jamsession/state.json` — persists session registry across daemon restarts. May become stale if sessions are manipulated outside the daemon.
+- **Config File**: `~/.jamsession/config.toml` — user-editable daemon configuration (log level, etc.). Read once at startup.
 
 ## Success Criteria *(mandatory)*
 
@@ -153,7 +153,7 @@ The daemon supports declaring MCP tool servers via `"type": "acp"` transport in 
 - The Agent Client Protocol provides the necessary primitives for session management and message passing.
 - The daemon runs on the same machine as the user's editor.
 - The agent process is launched via the `acpr` crate (ACP runtime).
-- The daemon's state file (`~/.academy/state.json`) may become stale if sessions are created/deleted by the agent outside the daemon's knowledge. Accepted risk for now.
+- The daemon's state file (`~/.jamsession/state.json`) may become stale if sessions are created/deleted by the agent outside the daemon's knowledge. Accepted risk for now.
 - ACP turns are serialized — only one `prompt/start` may be in flight at a time per session.
 
 ## Sequence Diagrams
@@ -165,8 +165,8 @@ sequenceDiagram
     participant D as Daemon
 
     Note over D: Process starts
-    Note over D: Load ~/.academy/state.json
-    Note over D: Open Unix socket at ~/.academy/daemon.sock
+    Note over D: Load ~/.jamsession/state.json
+    Note over D: Open Unix socket at ~/.jamsession/daemon.sock
     Note over D: Validate each session's cwd exists
     Note over D: Ready for client connections
 ```
@@ -296,14 +296,14 @@ sequenceDiagram
     participant C as Client
     participant D as Daemon
 
-    C->>C: try connect [~/.academy/daemon.sock]
+    C->>C: try connect [~/.jamsession/daemon.sock]
     Note over C: Socket doesn't exist
 
     C->>D: spawn daemon process
     Note over D: Daemon starts, runs startup sequence
     Note over D: Opens Unix socket
 
-    C->>C: retry connect [~/.academy/daemon.sock]
+    C->>C: retry connect [~/.jamsession/daemon.sock]
     C->>D: initialize
     D-->>C: capabilities
 ```

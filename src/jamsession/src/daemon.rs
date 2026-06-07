@@ -25,9 +25,9 @@ pub struct Daemon {
     state: Arc<Mutex<DaemonState>>,
     /// In-memory session state (lifecycle, buffers, agent connections).
     sessions: Arc<SessionManager>,
-    /// Path to the Unix domain socket (e.g. `~/.academy/daemon.sock`).
+    /// Path to the Unix domain socket (e.g. `~/.jamsession/daemon.sock`).
     socket_path: PathBuf,
-    /// Path to the persistent state file (e.g. `~/.academy/state.json`).
+    /// Path to the persistent state file (e.g. `~/.jamsession/state.json`).
     state_path: PathBuf,
     /// How to spawn agent processes (registry lookup or direct binary path).
     agent_transport: AgentTransport,
@@ -75,7 +75,7 @@ impl Daemon {
     pub fn socket_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".academy")
+            .join(".jamsession")
             .join("daemon.sock")
     }
 
@@ -158,7 +158,7 @@ async fn handle_client(
 
     Agent
         .builder()
-        .name("academy-daemon")
+        .name("jamsession-daemon")
         .on_receive_request(
             {
                 let state = state.clone();

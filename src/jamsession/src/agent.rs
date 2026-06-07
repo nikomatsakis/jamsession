@@ -52,7 +52,7 @@ impl AgentManager {
 
         let response = Client
             .builder()
-            .name("academy-daemon-caps")
+            .name("jamsession-daemon-caps")
             .connect_with(
                 agent_transport,
                 async move |cx: ConnectionTo<agent_client_protocol::Agent>| {
@@ -80,7 +80,7 @@ impl AgentManager {
         let agent_transport = transport_config.make_transport();
         client_cx
             .spawn_connection(
-                Client.builder().name("academy-daemon-agent"),
+                Client.builder().name("jamsession-daemon-agent"),
                 agent_transport,
             )
             .map_err(|e| Error::AgentSpawn(format!("failed to spawn agent connection: {e}")))

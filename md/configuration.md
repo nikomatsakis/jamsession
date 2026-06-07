@@ -1,6 +1,6 @@
 # Configuration
 
-Academy reads configuration from `~/.academy/config.toml` on startup. If the file doesn't exist, defaults are used.
+Jamsession reads configuration from `~/.jamsession/config.toml` on startup. If the file doesn't exist, defaults are used.
 
 ## Config file
 
@@ -23,16 +23,16 @@ log_level = "info"
 
 | Path | Purpose |
 |------|---------|
-| `~/.academy/daemon.sock` | Unix domain socket (created at startup, `0600` permissions) |
-| `~/.academy/state.json` | Persistent session registry |
-| `~/.academy/config.toml` | Daemon configuration |
-| `~/.academy/daemon.log` | Main daemon log (daily rotation) |
-| `~/.academy/sessions/<id>/session.log` | Per-session log |
+| `~/.jamsession/daemon.sock` | Unix domain socket (created at startup, `0600` permissions) |
+| `~/.jamsession/state.json` | Persistent session registry |
+| `~/.jamsession/config.toml` | Daemon configuration |
+| `~/.jamsession/daemon.log` | Main daemon log (daily rotation) |
+| `~/.jamsession/sessions/<id>/session.log` | Per-session log |
 
 ## CLI options
 
 ```
-academy daemon [OPTIONS]
+jamsession daemon [OPTIONS]
 
 Options:
     --state-path <PATH>    Override the state file location

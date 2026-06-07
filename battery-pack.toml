@@ -11,3 +11,9 @@ version = "4"
 [[battery-pack.managed-deps]]
 name = "snapbox"
 version = "1.2.1"
+
+[[battery-pack]]
+name = "ci"
+features = ["default"]
+managed-deps = []
+applied-templates = ["full"]

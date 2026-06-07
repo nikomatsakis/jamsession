@@ -1,0 +1,53 @@
+name: mdBook
+
+on:
+  push:
+    branches: [main]
+    paths: ["md/**", "book.toml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install mdBook
+        uses: taiki-e/install-action@59012be0884e296ca2da49b530610e72c49039ad # v2.81.6
+        with:
+          tool: mdbook
+
+      - name: Install mdbook-mermaid
+        uses: taiki-e/install-action@59012be0884e296ca2da49b530610e72c49039ad # v2.81.6
+        with:
+          tool: mdbook-mermaid
+
+      - name: Build book
+        run: mdbook build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac2b3c603fc # v4.0.5
