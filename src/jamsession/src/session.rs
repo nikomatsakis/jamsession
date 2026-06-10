@@ -10,7 +10,7 @@ use agent_client_protocol::{ConnectionTo, Dispatch, HandleDispatchFrom, Handled}
 use chrono::Utc;
 use tokio::sync::Notify;
 
-use crate::agent::{AgentManager, AgentTransport};
+use crate::agent::{AgentFactory, AgentManager};
 use crate::bridge::{ActivitySignal, BridgeHandler, MessageBuffer, ReverseBridgeHandler};
 use crate::error::Error;
 use crate::state::{DaemonState, SessionRecord};
@@ -127,8 +127,10 @@ impl LiveSession {
 
 pub struct SessionManager {
     sessions: Arc<Mutex<HashMap<String, LiveSession>>>,
-    agent_transport: AgentTransport,
+    factory: Arc<dyn AgentFactory>,
     idle_timeout: std::time::Duration,
+    quiescence_timeout: std::time::Duration,
+    send_guidelines: bool,
 }
 
 impl Default for SessionManager {
@@ -141,18 +143,30 @@ impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            agent_transport: AgentTransport::default(),
+            factory: Arc::new(crate::agent::AcprFactory::default()),
             idle_timeout: std::time::Duration::from_secs(900),
+            quiescence_timeout: std::time::Duration::from_secs(10),
+            send_guidelines: true,
         }
     }
 
-    pub fn with_agent_transport(mut self, transport: AgentTransport) -> Self {
-        self.agent_transport = transport;
+    pub fn with_factory(mut self, factory: Arc<dyn AgentFactory>) -> Self {
+        self.factory = factory;
         self
     }
 
     pub fn with_idle_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.idle_timeout = timeout;
+        self
+    }
+
+    pub fn with_quiescence_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.quiescence_timeout = timeout;
+        self
+    }
+
+    pub fn with_send_guidelines(mut self, send: bool) -> Self {
+        self.send_guidelines = send;
         self
     }
 
@@ -206,7 +220,13 @@ impl SessionManager {
         }
 
         // Spawn the agent
-        let agent_cx = AgentManager::spawn_agent_connection(client_cx, &self.agent_transport)?;
+        let agent_cx = AgentManager::spawn_agent_connection(
+            client_cx,
+            self.factory.as_ref(),
+            "",
+            &req.cwd,
+            &req.mcp_servers,
+        )?;
         AgentManager::initialize_agent(&agent_cx).await?;
         let agent_response =
             AgentManager::new_session_on_agent(&agent_cx, &req.cwd, req.mcp_servers).await?;
@@ -228,16 +248,18 @@ impl SessionManager {
             let _ = daemon_state.save(state_path);
         }
 
-        // Send guidelines as first prompt
-        let guidelines_prompt = PromptRequest::new(
-            agent_response.session_id.clone(),
-            vec![ContentBlock::Text(TextContent::new(GUIDELINES))],
-        );
-        agent_cx
-            .send_request(guidelines_prompt)
-            .block_task()
-            .await
-            .map_err(|e| Error::AgentSpawn(format!("guidelines delivery failed: {e}")))?;
+        // Send guidelines as first prompt (skipped in tests)
+        if self.send_guidelines {
+            let guidelines_prompt = PromptRequest::new(
+                agent_response.session_id.clone(),
+                vec![ContentBlock::Text(TextContent::new(GUIDELINES))],
+            );
+            agent_cx
+                .send_request(guidelines_prompt)
+                .block_task()
+                .await
+                .map_err(|e| Error::AgentSpawn(format!("guidelines delivery failed: {e}")))?;
+        }
 
         // Create buffer and install bidirectional bridge
         let activity: ActivitySignal = Arc::new(Notify::new());
@@ -329,8 +351,13 @@ impl SessionManager {
 
         match action {
             LoadAction::SpawnAgent { cwd, sid } => {
-                let agent_cx =
-                    AgentManager::spawn_agent_connection(client_cx, &self.agent_transport)?;
+                let agent_cx = AgentManager::spawn_agent_connection(
+                    client_cx,
+                    self.factory.as_ref(),
+                    &sid,
+                    &cwd,
+                    &req.mcp_servers,
+                )?;
                 AgentManager::initialize_agent(&agent_cx).await?;
 
                 let replay_buffer: MessageBuffer = Arc::new(Mutex::new(Vec::new()));
@@ -456,8 +483,13 @@ impl SessionManager {
 
         match action {
             ResumeAction::SpawnAgent { cwd, sid } => {
-                let agent_cx =
-                    AgentManager::spawn_agent_connection(client_cx, &self.agent_transport)?;
+                let agent_cx = AgentManager::spawn_agent_connection(
+                    client_cx,
+                    self.factory.as_ref(),
+                    &sid,
+                    &cwd,
+                    &req.mcp_servers,
+                )?;
                 AgentManager::initialize_agent(&agent_cx).await?;
                 AgentManager::load_session_on_agent(&agent_cx, &sid, &cwd, req.mcp_servers).await?;
 
@@ -512,11 +544,12 @@ impl SessionManager {
                 let sid = session_id.to_string();
                 let activity = session.activity.clone();
                 let idle_timeout = self.idle_timeout;
+                let quiescence_timeout = self.quiescence_timeout;
 
                 let handle = tokio::spawn(async move {
-                    // T036: Wait for 10s of pipe silence (reset on activity)
+                    // T036: Wait for pipe silence (reset on activity)
                     loop {
-                        let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
+                        let timeout = tokio::time::sleep(quiescence_timeout);
                         tokio::select! {
                             () = activity.notified() => {
                                 continue;
@@ -603,7 +636,13 @@ impl SessionManager {
         };
 
         let result: Result<(), Error> = async {
-            let agent_cx = AgentManager::spawn_agent_connection(client_cx, &self.agent_transport)?;
+            let agent_cx = AgentManager::spawn_agent_connection(
+                client_cx,
+                self.factory.as_ref(),
+                &sid,
+                &cwd,
+                &[],
+            )?;
             AgentManager::initialize_agent(&agent_cx).await?;
             AgentManager::load_session_on_agent(&agent_cx, &sid, &cwd, vec![]).await?;
 
