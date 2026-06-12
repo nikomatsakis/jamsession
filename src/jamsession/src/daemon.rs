@@ -15,7 +15,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::agent::{AgentFactory, AgentManager};
 use crate::error::Error;
-use crate::session::SessionManager;
+use crate::session::{LifecycleEvent, LifecycleEventSender, SessionManager};
 use crate::state::DaemonState;
 
 /// Long-running background process that listens on a Unix socket,
@@ -35,6 +35,8 @@ pub struct Daemon {
     quiescence_timeout: std::time::Duration,
     /// Whether to send guidelines as first prompt on new sessions.
     send_guidelines: bool,
+    /// Optional channel for lifecycle event notifications.
+    lifecycle_tx: Option<LifecycleEventSender>,
 }
 
 impl Daemon {
@@ -48,6 +50,7 @@ impl Daemon {
             idle_timeout: std::time::Duration::from_secs(900),
             quiescence_timeout: std::time::Duration::from_secs(10),
             send_guidelines: true,
+            lifecycle_tx: None,
         }
     }
 
@@ -61,6 +64,7 @@ impl Daemon {
             idle_timeout: std::time::Duration::from_secs(900),
             quiescence_timeout: std::time::Duration::from_secs(10),
             send_guidelines: true,
+            lifecycle_tx: None,
         }
     }
 
@@ -84,6 +88,11 @@ impl Daemon {
         self
     }
 
+    pub fn with_lifecycle_events(mut self, tx: LifecycleEventSender) -> Self {
+        self.lifecycle_tx = Some(tx);
+        self
+    }
+
     pub fn socket_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -92,13 +101,15 @@ impl Daemon {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        let sessions = Arc::new(
-            SessionManager::new()
-                .with_factory(self.factory.clone())
-                .with_idle_timeout(self.idle_timeout)
-                .with_quiescence_timeout(self.quiescence_timeout)
-                .with_send_guidelines(self.send_guidelines),
-        );
+        let mut session_mgr = SessionManager::new()
+            .with_factory(self.factory.clone())
+            .with_idle_timeout(self.idle_timeout)
+            .with_quiescence_timeout(self.quiescence_timeout)
+            .with_send_guidelines(self.send_guidelines);
+        if let Some(tx) = &self.lifecycle_tx {
+            session_mgr = session_mgr.with_lifecycle_events(tx.clone());
+        }
+        let sessions = Arc::new(session_mgr);
 
         // Rehydrate live sessions from persistent state
         {
@@ -123,6 +134,10 @@ impl Daemon {
         }
 
         tracing::info!(path = %self.socket_path.display(), "daemon listening");
+
+        if let Some(tx) = &self.lifecycle_tx {
+            let _ = tx.send(LifecycleEvent::Initialized);
+        }
 
         // ANCHOR: cwd-health-check
         // FR-005: periodic cwd health check

@@ -9,8 +9,10 @@ use agent_client_protocol::{Client, DynConnectTo};
 use jamsession::agent::AgentFactory;
 use jamsession::error::Error;
 use rhaicp::RhaiAgent;
+use tokio::sync::mpsc;
 use transport::UnixSocketTransport;
 
+pub use jamsession::LifecycleEvent;
 pub use rhaicp::PriorSession;
 
 /// Test implementation of `AgentFactory` that creates in-process RhaiAgent instances.
@@ -80,11 +82,12 @@ pub struct TestDaemon {
     _temp_dir: tempfile::TempDir,
     socket_path: PathBuf,
     _daemon_handle: tokio::task::JoinHandle<()>,
+    lifecycle_rx: mpsc::UnboundedReceiver<LifecycleEvent>,
 }
 
 impl TestDaemon {
     /// Start a test daemon with the given configuration.
-    /// Panics if the daemon doesn't start within 2 seconds.
+    /// Panics if the daemon doesn't become ready within 2 seconds.
     pub async fn start(config: TestDaemonConfig) -> Self {
         let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
         let socket_path = temp_dir.path().join("daemon.sock");
@@ -93,6 +96,8 @@ impl TestDaemon {
         let factory: Arc<dyn AgentFactory> = Arc::new(RhaiAgentFactory::new(&config));
         let idle_timeout = config.idle_timeout;
 
+        let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+
         let socket_path_clone = socket_path.clone();
         let daemon_handle = tokio::spawn(async move {
             let daemon =
@@ -100,26 +105,48 @@ impl TestDaemon {
                     .with_factory(factory)
                     .with_idle_timeout(idle_timeout)
                     .with_quiescence_timeout(Duration::from_millis(10))
-                    .with_send_guidelines(false);
+                    .with_send_guidelines(false)
+                    .with_lifecycle_events(lifecycle_tx);
             let _ = daemon.run().await;
         });
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if socket_path.exists() {
-                break;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match lifecycle_rx.recv().await {
+                    Some(LifecycleEvent::Initialized) => break,
+                    Some(_) => continue,
+                    None => panic!("daemon task exited before sending Initialized"),
+                }
             }
-            if tokio::time::Instant::now() >= deadline {
-                panic!("TestDaemon did not start within 2 seconds");
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("TestDaemon did not initialize within 2 seconds");
 
         Self {
             _temp_dir: temp_dir,
             socket_path,
             _daemon_handle: daemon_handle,
+            lifecycle_rx,
         }
+    }
+
+    /// Block until a lifecycle event matching `predicate` is received, or timeout.
+    pub async fn wait_for(
+        &mut self,
+        predicate: impl Fn(&LifecycleEvent) -> bool,
+        timeout: Duration,
+    ) -> LifecycleEvent {
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self.lifecycle_rx.recv().await {
+                    Some(event) if predicate(&event) => return event,
+                    Some(_) => continue,
+                    None => panic!("daemon task exited while waiting for lifecycle event"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for lifecycle event")
     }
 
     /// Execute a Rhai client script against this daemon.

@@ -17,6 +17,17 @@ use crate::state::{DaemonState, SessionRecord};
 
 static GUIDELINES: &str = include_str!("guidelines.md");
 
+/// Events emitted by the daemon for observability and test synchronization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleEvent {
+    /// The daemon has bound its socket and is accepting connections.
+    Initialized,
+    /// An agent session has become quiescent (no pipe activity after turn completion).
+    AgentQuiescent { session_id: String },
+}
+
+pub type LifecycleEventSender = tokio::sync::mpsc::UnboundedSender<LifecycleEvent>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleState {
     AgentDead,
@@ -131,6 +142,7 @@ pub struct SessionManager {
     idle_timeout: std::time::Duration,
     quiescence_timeout: std::time::Duration,
     send_guidelines: bool,
+    lifecycle_tx: Option<LifecycleEventSender>,
 }
 
 impl Default for SessionManager {
@@ -147,6 +159,7 @@ impl SessionManager {
             idle_timeout: std::time::Duration::from_secs(900),
             quiescence_timeout: std::time::Duration::from_secs(10),
             send_guidelines: true,
+            lifecycle_tx: None,
         }
     }
 
@@ -167,6 +180,11 @@ impl SessionManager {
 
     pub fn with_send_guidelines(mut self, send: bool) -> Self {
         self.send_guidelines = send;
+        self
+    }
+
+    pub fn with_lifecycle_events(mut self, tx: LifecycleEventSender) -> Self {
+        self.lifecycle_tx = Some(tx);
         self
     }
 
@@ -545,6 +563,7 @@ impl SessionManager {
                 let activity = session.activity.clone();
                 let idle_timeout = self.idle_timeout;
                 let quiescence_timeout = self.quiescence_timeout;
+                let lifecycle_tx = self.lifecycle_tx.clone();
 
                 let handle = tokio::spawn(async move {
                     // T036: Wait for pipe silence (reset on activity)
@@ -570,6 +589,12 @@ impl SessionManager {
                         } else {
                             return;
                         }
+                    }
+
+                    if let Some(tx) = &lifecycle_tx {
+                        let _ = tx.send(LifecycleEvent::AgentQuiescent {
+                            session_id: sid.clone(),
+                        });
                     }
 
                     tokio::time::sleep(idle_timeout).await;
