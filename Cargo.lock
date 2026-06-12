@@ -2388,6 +2388,8 @@ dependencies = [
 [[package]]
 name = "rhaicp"
 version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3425c8dbfd731a39b959343d5b851f7b280908c7ddcbdcf8ecf3e05c2846c1a2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
