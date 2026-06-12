@@ -1,0 +1,19 @@
+[package]
+name = "jamsession-test"
+version = "0.1.0"
+edition = "2024"
+description = "Integration test harness for jamsession"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+jamsession = { path = "../jamsession" }
+agent-client-protocol = "0.13.1"
+rhaicp = "2.1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tempfile = "3"
+
+[dev-dependencies]
+agent-client-protocol = "0.13.1"
+rhaicp = "2.1.0"

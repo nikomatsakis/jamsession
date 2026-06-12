@@ -38,4 +38,3 @@ path = "tests/helpers/mock_agent.rs"
 [dev-dependencies]
 tempfile = "3.27.0"
 snapbox = { version = "1.2.1", features = ["cmd", "term-svg"] }
-rhaicp = "2.1.0"

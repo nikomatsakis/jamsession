@@ -1562,7 +1562,6 @@ dependencies = [
  "lazy_static",
  "nix",
  "pkg-config",
- "rhaicp",
  "serde",
  "serde_json",
  "snapbox",
@@ -1587,6 +1586,18 @@ dependencies = [
  "serde",
  "serde_json",
  "walkdir",
+]
+
+[[package]]
+name = "jamsession-test"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "jamsession",
+ "rhaicp",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

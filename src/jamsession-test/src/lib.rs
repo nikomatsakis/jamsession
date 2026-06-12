@@ -1,4 +1,4 @@
-pub mod transport;
+mod transport;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,8 +8,10 @@ use agent_client_protocol::schema::{McpServer, SessionId};
 use agent_client_protocol::{Client, DynConnectTo};
 use jamsession::agent::AgentFactory;
 use jamsession::error::Error;
-use rhaicp::{PriorSession, RhaiAgent};
+use rhaicp::RhaiAgent;
 use transport::UnixSocketTransport;
+
+pub use rhaicp::PriorSession;
 
 /// Test implementation of `AgentFactory` that creates in-process RhaiAgent instances.
 pub struct RhaiAgentFactory {
@@ -40,7 +42,6 @@ impl AgentFactory for RhaiAgentFactory {
         let mut agent = RhaiAgent::new();
         if let Some(script) = &self.new_session_script {
             agent = agent.new_session_script(script.clone());
-            // Also register as a prior session so session/load works with the same script
             if !session_id.is_empty() {
                 let mut prior = self.prior_sessions.clone();
                 prior.push(PriorSession {
@@ -103,7 +104,6 @@ impl TestDaemon {
             let _ = daemon.run().await;
         });
 
-        // Wait for socket to appear
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             if socket_path.exists() {

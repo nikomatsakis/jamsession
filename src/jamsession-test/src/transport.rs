@@ -4,8 +4,6 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo};
 use tokio::net::UnixStream;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-/// Transport that connects to a daemon's Unix socket.
-/// Implements `ConnectTo<Client>` — the daemon speaks as an Agent to the Client.
 pub struct UnixSocketTransport {
     socket_path: PathBuf,
 }
