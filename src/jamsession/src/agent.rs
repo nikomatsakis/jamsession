@@ -52,12 +52,12 @@ impl AgentFactory for AcprFactory {
 }
 
 /// Test/dev factory: spawns agent from a binary path.
-struct BinaryFactory {
+pub struct BinaryFactory {
     path: std::path::PathBuf,
 }
 
 impl BinaryFactory {
-    fn new(path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
         Self { path: path.into() }
     }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StateError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(super) struct DaemonState {
+pub struct DaemonState {
     version: u32,
     pub(super) sessions: Vec<SessionRecord>,
     pub(super) capabilities_cache: Option<CachedCapabilities>,
@@ -37,7 +37,7 @@ impl DaemonState {
         }
     }
 
-    fn state_path() -> PathBuf {
+    pub fn state_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".jamsession")

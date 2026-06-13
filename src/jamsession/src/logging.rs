@@ -12,7 +12,7 @@ use tracing_subscriber::layer::Context;
 /// T043: A tracing layer that routes log events to per-session log files.
 /// Events emitted within a span containing `session_id` are written to
 /// `~/.jamsession/sessions/<session_id>/session.log` in addition to the main daemon log.
-struct SessionFileLayer {
+pub struct SessionFileLayer {
     base_dir: PathBuf,
     writers: Mutex<HashMap<String, fs::File>>,
 }
@@ -24,7 +24,7 @@ impl Default for SessionFileLayer {
 }
 
 impl SessionFileLayer {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let base_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".jamsession")

@@ -2,8 +2,8 @@ mod actor;
 pub mod agent;
 pub mod daemon;
 pub mod error;
-mod logging;
+pub mod logging;
 mod session;
-mod state;
+pub mod state;
 
 pub use session::{LifecycleEvent, LifecycleEventSender};
