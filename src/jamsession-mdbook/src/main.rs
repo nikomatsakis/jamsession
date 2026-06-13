@@ -87,7 +87,7 @@ struct Config {
     root: PathBuf,
     scan_dirs: Vec<PathBuf>,
     github_repo: String,
-    github_branch: String,
+    github_ref: String,
 }
 
 impl Config {
@@ -109,12 +109,89 @@ impl Config {
             pp_config.scan_dirs.iter().map(|s| root.join(s)).collect()
         };
 
+        let (repo, git_ref) = detect_git_context(&root, &pp_config);
+
         Ok(Config {
             root,
             scan_dirs,
-            github_repo: pp_config.github_repo,
-            github_branch: pp_config.github_branch,
+            github_repo: repo,
+            github_ref: git_ref,
         })
+    }
+}
+
+/// Detect the GitHub repo and ref from the git working tree.
+/// Uses the current HEAD commit SHA for stable links, and parses the
+/// remote URL to determine the correct fork (not just the configured default).
+fn detect_git_context(root: &Path, fallback: &PreprocessorConfig) -> (String, String) {
+    let git_ref = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            o.status
+                .success()
+                .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        });
+
+    let remote_url = tracking_remote_url(root).or_else(|| origin_remote_url(root));
+
+    let repo = remote_url
+        .and_then(|url| parse_github_repo(&url))
+        .unwrap_or_else(|| fallback.github_repo.clone());
+
+    let git_ref = git_ref.unwrap_or_else(|| fallback.github_branch.clone());
+
+    (repo, git_ref)
+}
+
+/// Get the remote URL for the current branch's upstream tracking remote.
+fn tracking_remote_url(root: &Path) -> Option<String> {
+    let remote_name = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+
+    // upstream is like "origin/main" — extract the remote name
+    let remote = remote_name.split('/').next()?;
+    remote_url_by_name(root, remote)
+}
+
+/// Get the URL for the "origin" remote.
+fn origin_remote_url(root: &Path) -> Option<String> {
+    remote_url_by_name(root, "origin")
+}
+
+fn remote_url_by_name(root: &Path, name: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["remote", "get-url", name])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Parse "owner/repo" from a GitHub remote URL.
+/// Handles: git@github.com:owner/repo.git, https://github.com/owner/repo.git
+fn parse_github_repo(url: &str) -> Option<String> {
+    let path = if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else if url.contains("github.com/") {
+        url.split("github.com/").nth(1)?
+    } else {
+        return None;
+    };
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<&str> = path.splitn(3, '/').collect();
+    if parts.len() >= 2 {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
     }
 }
 
