@@ -189,26 +189,25 @@ async fn handle_client(
         .on_receive_request(
             async |req: InitializeRequest,
                    responder: Responder<InitializeResponse>,
-                   cx: ConnectionTo<agent_client_protocol::Client>| {
-                let actor_tx = actor_tx.clone();
-                cx.spawn(async move {
-                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    let _ = actor_tx.send(DaemonMessage::Initialize {
-                        req,
-                        reply: reply_tx,
-                    });
-                    match reply_rx.await {
-                        Ok(Ok(response)) => responder.respond(response),
-                        Ok(Err(e)) => {
-                            responder.respond_with_error(agent_client_protocol::Error::from(&e))
-                        }
-                        Err(_) => responder.respond_with_error(
-                            agent_client_protocol::Error::internal_error()
-                                .data("actor channel closed"),
-                        ),
+                   _cx: ConnectionTo<agent_client_protocol::Client>| {
+                // NDM: I think we should simplify how we are handling capabilities. The first connect can tell us the client
+                // NDM: capabilities to expect. If we see another connection with fewer capabilities, we just abort.
+                // NDM: Similarly, we tell the agent, and if later spawns result in agents with different capabilities, we abort.
+                // NDM: Simple, hacky, horrible, and probably fine.
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let _ = actor_tx.send(DaemonMessage::Initialize {
+                    req,
+                    reply: reply_tx,
+                });
+                match reply_rx.await {
+                    Ok(Ok(response)) => responder.respond(response),
+                    Ok(Err(e)) => {
+                        responder.respond_with_error(agent_client_protocol::Error::from(&e))
                     }
-                })?;
-                Ok(())
+                    Err(_) => responder.respond_with_error(
+                        agent_client_protocol::Error::internal_error().data("actor channel closed"),
+                    ),
+                }
             },
             on_receive_request!(),
         )
@@ -217,23 +216,18 @@ async fn handle_client(
         .on_receive_request(
             async |req: ListSessionsRequest,
                    responder: Responder<ListSessionsResponse>,
-                   cx: ConnectionTo<agent_client_protocol::Client>| {
-                let actor_tx = actor_tx.clone();
-                cx.spawn(async move {
-                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    let _ = actor_tx.send(DaemonMessage::ListSessions {
-                        req,
-                        reply: reply_tx,
-                    });
-                    match reply_rx.await {
-                        Ok(response) => responder.respond(response),
-                        Err(_) => responder.respond_with_error(
-                            agent_client_protocol::Error::internal_error()
-                                .data("actor channel closed"),
-                        ),
-                    }
-                })?;
-                Ok(())
+                   _cx: ConnectionTo<agent_client_protocol::Client>| {
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                let _ = actor_tx.send(DaemonMessage::ListSessions {
+                    req,
+                    reply: reply_tx,
+                });
+                match reply_rx.await {
+                    Ok(response) => responder.respond(response),
+                    Err(_) => responder.respond_with_error(
+                        agent_client_protocol::Error::internal_error().data("actor channel closed"),
+                    ),
+                }
             },
             on_receive_request!(),
         )
@@ -243,27 +237,29 @@ async fn handle_client(
             async |req: NewSessionRequest,
                    responder: Responder<NewSessionResponse>,
                    cx: ConnectionTo<agent_client_protocol::Client>| {
-                let actor_tx = actor_tx.clone();
-                let factory = factory.clone();
-                let active_sessions = active_sessions.clone();
-                let cx2 = cx.clone();
-                cx.spawn(async move {
-                    let result = handle_session_new(
-                        req,
-                        &cx2,
-                        &actor_tx,
-                        factory.as_ref(),
-                        send_guidelines,
-                    )
-                    .await;
-                    match result {
-                        Ok(response) => {
-                            let sid = response.session_id.0.to_string();
-                            active_sessions.lock().unwrap().push(sid);
-                            responder.respond(response)
-                        }
-                        Err(e) => {
-                            responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                cx.spawn({
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
+                    let active_sessions = active_sessions.clone();
+                    let cx = cx.clone();
+                    async move {
+                        let result = handle_session_new(
+                            req,
+                            &cx,
+                            &actor_tx,
+                            factory.as_ref(),
+                            send_guidelines,
+                        )
+                        .await;
+                        match result {
+                            Ok(response) => {
+                                let sid = response.session_id.0.to_string();
+                                active_sessions.lock().unwrap().push(sid);
+                                responder.respond(response)
+                            }
+                            Err(e) => {
+                                responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                            }
                         }
                     }
                 })?;
@@ -277,20 +273,22 @@ async fn handle_client(
             async |req: LoadSessionRequest,
                    responder: Responder<LoadSessionResponse>,
                    cx: ConnectionTo<agent_client_protocol::Client>| {
-                let actor_tx = actor_tx.clone();
-                let factory = factory.clone();
-                let active_sessions = active_sessions.clone();
-                let cx2 = cx.clone();
-                cx.spawn(async move {
-                    let result =
-                        handle_session_load(req, &cx2, &actor_tx, factory.as_ref()).await;
-                    match result {
-                        Ok((response, sid)) => {
-                            active_sessions.lock().unwrap().push(sid);
-                            responder.respond(response)
-                        }
-                        Err(e) => {
-                            responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                cx.spawn({
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
+                    let active_sessions = active_sessions.clone();
+                    let cx = cx.clone();
+                    async move {
+                        let result =
+                            handle_session_load(req, &cx, &actor_tx, factory.as_ref()).await;
+                        match result {
+                            Ok((response, sid)) => {
+                                active_sessions.lock().unwrap().push(sid);
+                                responder.respond(response)
+                            }
+                            Err(e) => {
+                                responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                            }
                         }
                     }
                 })?;
@@ -303,20 +301,22 @@ async fn handle_client(
             async |req: ResumeSessionRequest,
                    responder: Responder<ResumeSessionResponse>,
                    cx: ConnectionTo<agent_client_protocol::Client>| {
-                let actor_tx = actor_tx.clone();
-                let factory = factory.clone();
-                let active_sessions = active_sessions.clone();
-                let cx2 = cx.clone();
-                cx.spawn(async move {
-                    let result =
-                        handle_session_resume(req, &cx2, &actor_tx, factory.as_ref()).await;
-                    match result {
-                        Ok((response, sid)) => {
-                            active_sessions.lock().unwrap().push(sid);
-                            responder.respond(response)
-                        }
-                        Err(e) => {
-                            responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                cx.spawn({
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
+                    let active_sessions = active_sessions.clone();
+                    let cx = cx.clone();
+                    async move {
+                        let result =
+                            handle_session_resume(req, &cx, &actor_tx, factory.as_ref()).await;
+                        match result {
+                            Ok((response, sid)) => {
+                                active_sessions.lock().unwrap().push(sid);
+                                responder.respond(response)
+                            }
+                            Err(e) => {
+                                responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                            }
                         }
                     }
                 })?;
