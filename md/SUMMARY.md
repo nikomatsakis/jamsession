@@ -11,3 +11,4 @@
 
 - [Design and implementation](./design/README.md)
   - [Key sequence diagrams](./design/sequence_diagrams.md)
+  - [Daemon actor architecture](./design/daemon_actor.md)
