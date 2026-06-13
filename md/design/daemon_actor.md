@@ -4,32 +4,38 @@ The daemon uses a **central actor** pattern: a single task owns all mutable sess
 
 ## Architecture overview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                            Daemon                                 │
-│                                                                  │
-│   ┌────────────┐         ┌──────────────────┐                   │
-│   │ Unix Socket│──accept──>│  Client Task   │                   │
-│   │  Listener  │         │  (per-connection)│                   │
-│   └────────────┘         └────────┬─────────┘                   │
-│                                   │                              │
-│                              actor_tx                             │
-│                                   │                              │
-│                          ┌────────▼─────────┐                   │
-│                          │   Daemon Actor   │                   │
-│                          │                  │                   │
-│                          │  - sessions map  │                   │
-│                          │  - state file    │                   │
-│                          │  - lifecycle     │                   │
-│                          └────────┬─────────┘                   │
-│                                   │                              │
-│                     ┌─────────────┼─────────────┐               │
-│                     │             │             │                │
-│              ┌──────▼──────┐ ┌────▼────┐ ┌─────▼──────┐        │
-│              │ Agent Task  │ │  Timer  │ │ Agent Task │        │
-│              │ (session A) │ │  Events │ │ (session B)│        │
-│              └─────────────┘ └─────────┘ └────────────┘        │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+Listener[Unix Socket Listener]
+
+subgraph Clients
+    CT1[Client Task<br>per-connection]
+    CT2[Client Task<br>per-connection]
+end
+
+subgraph Agents
+    Agent1[Agent Task<br>session A]
+    Agent2[Agent Task<br>session B]
+end
+
+subgraph Timers
+    Timer1[Timer A]
+    Timer2[Timer B]
+end
+
+Actor[Daemon Actor<br>- sessions map<br>- state file<br>- lifecycle]    
+Listener -->|accept| CT1
+Listener -->|accept| CT2
+CT1 -->|actor_tx| Actor
+CT2 -->|actor_tx| Actor
+Agent1 -->|actor_tx| Actor
+Agent2 -->|actor_tx| Actor
+Timer1 -->|actor_tx| Actor
+Timer2 -->|actor_tx| Actor
+Actor -.->|send_proxied_message| Agent1
+Actor -.->|send_proxied_message| Agent2
+Actor -.->|send_proxied_message| CT1
+Actor -.->|send_proxied_message| CT2
 ```
 
 The key invariant: **only the actor task reads or writes session state**. Everything else sends a `DaemonMessage` and (optionally) awaits a reply via a oneshot channel.
