@@ -1,49 +1,38 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use agent_client_protocol::{
-    Agent, ByteStreams, ConnectionTo, Responder, on_receive_request,
+    Agent, ByteStreams, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Responder,
+    on_receive_request,
     schema::{
         InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
         LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
-        ResumeSessionRequest, ResumeSessionResponse, SessionInfo,
+        ResumeSessionRequest, ResumeSessionResponse, SessionNotification,
     },
 };
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Notify;
+use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::actor::{DaemonActor, DaemonMessage, install_agent_forwarder, install_client_forwarder};
 use crate::agent::{AgentFactory, AgentManager};
 use crate::error::Error;
-use crate::session::{LifecycleEvent, LifecycleEventSender, SessionManager};
+use crate::session::{LifecycleEvent, LifecycleEventSender};
 use crate::state::DaemonState;
 
-/// Long-running background process that listens on a Unix socket,
-/// manages agent sessions, and bridges ACP traffic between clients and agents.
 pub struct Daemon {
-    /// Persistent session registry and capabilities cache, shared across client tasks.
-    state: Arc<Mutex<DaemonState>>,
-    /// Path to the Unix domain socket (e.g. `~/.jamsession/daemon.sock`).
     socket_path: PathBuf,
-    /// Path to the persistent state file (e.g. `~/.jamsession/state.json`).
     state_path: PathBuf,
-    /// How to spawn agent processes.
     factory: Arc<dyn AgentFactory>,
-    /// Agent idle timeout.
     idle_timeout: std::time::Duration,
-    /// Quiescence timeout (pipe silence before idle timer starts).
     quiescence_timeout: std::time::Duration,
-    /// Whether to send guidelines as first prompt on new sessions.
     send_guidelines: bool,
-    /// Optional channel for lifecycle event notifications.
     lifecycle_tx: Option<LifecycleEventSender>,
 }
 
 impl Daemon {
     pub fn new(state_path: &std::path::Path) -> Self {
-        let state = DaemonState::load(state_path);
         Self {
-            state: Arc::new(Mutex::new(state)),
             socket_path: Self::socket_path(),
             state_path: state_path.to_path_buf(),
             factory: Arc::new(crate::agent::AcprFactory::default()),
@@ -55,9 +44,7 @@ impl Daemon {
     }
 
     pub fn new_with_paths(state_path: &std::path::Path, socket_path: &std::path::Path) -> Self {
-        let state = DaemonState::load(state_path);
         Self {
-            state: Arc::new(Mutex::new(state)),
             socket_path: socket_path.to_path_buf(),
             state_path: state_path.to_path_buf(),
             factory: Arc::new(crate::agent::AcprFactory::default()),
@@ -101,21 +88,35 @@ impl Daemon {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        let mut session_mgr = SessionManager::new()
-            .with_factory(self.factory.clone())
-            .with_idle_timeout(self.idle_timeout)
-            .with_quiescence_timeout(self.quiescence_timeout)
-            .with_send_guidelines(self.send_guidelines);
-        if let Some(tx) = &self.lifecycle_tx {
-            session_mgr = session_mgr.with_lifecycle_events(tx.clone());
-        }
-        let sessions = Arc::new(session_mgr);
+        let state = DaemonState::load(&self.state_path);
 
-        // Rehydrate live sessions from persistent state
+        let (actor_tx, actor_rx) = mpsc::unbounded_channel();
+
+        let mut actor = DaemonActor::new(
+            state,
+            self.state_path.clone(),
+            self.factory.clone(),
+            self.idle_timeout,
+            self.quiescence_timeout,
+            self.lifecycle_tx.clone(),
+            actor_tx.clone(),
+        );
+
+        // CWD health check timer
         {
-            let state = self.state.lock().unwrap().clone();
-            sessions.rehydrate_from_state(&state);
+            let tx = actor_tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let _ = tx.send(DaemonMessage::CwdHealthCheck);
+                }
+            });
         }
+
+        // Spawn actor task
+        tokio::spawn(async move {
+            actor.run(actor_rx).await;
+        });
 
         if let Some(parent) = self.socket_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -125,7 +126,6 @@ impl Daemon {
 
         let listener = UnixListener::bind(&self.socket_path)?;
 
-        // FR-002: restrict socket to owner only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -139,38 +139,20 @@ impl Daemon {
             let _ = tx.send(LifecycleEvent::Initialized);
         }
 
-        // ANCHOR: cwd-health-check
-        // FR-005: periodic cwd health check
-        {
-            let sessions = sessions.clone();
-            let state = self.state.clone();
-            let state_path = self.state_path.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    sessions.check_cwd_health(&state, &state_path);
-                }
-            });
-        }
-        // ANCHOR_END: cwd-health-check
-
-        // ANCHOR: accept-loop
         loop {
             let (stream, _) = listener.accept().await?;
-            let state = self.state.clone();
-            let sessions = sessions.clone();
-            let state_path = self.state_path.clone();
+            let tx = actor_tx.clone();
             let factory = self.factory.clone();
+            let send_guidelines = self.send_guidelines;
             let lifecycle_tx = self.lifecycle_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    handle_client(stream, state, sessions, state_path, factory, lifecycle_tx).await
+                    handle_client(stream, tx, factory, send_guidelines, lifecycle_tx).await
                 {
                     tracing::error!("client connection error: {e}");
                 }
             });
         }
-        // ANCHOR_END: accept-loop
     }
 
     pub async fn shutdown(&self) {
@@ -181,95 +163,104 @@ impl Daemon {
 
 async fn handle_client(
     stream: UnixStream,
-    state: Arc<Mutex<DaemonState>>,
-    sessions: Arc<SessionManager>,
-    state_path: PathBuf,
+    actor_tx: mpsc::UnboundedSender<DaemonMessage>,
     factory: Arc<dyn AgentFactory>,
+    send_guidelines: bool,
     lifecycle_tx: Option<LifecycleEventSender>,
 ) -> Result<(), agent_client_protocol::Error> {
     if let Some(tx) = &lifecycle_tx {
         let _ = tx.send(LifecycleEvent::ClientConnected);
     }
+
     let (read_half, write_half) = stream.into_split();
     let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
 
-    // T039: Cancel signal for this client connection — notified when a new client takes over
-    let client_cancel: Arc<Notify> = Arc::new(Notify::new());
-
-    // Track which session this client is associated with (set on session/new, load, or resume)
-    let active_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let active_session_id: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     Agent
         .builder()
         .name("jamsession-daemon")
         .on_receive_request(
             {
-                let state = state.clone();
-                let factory = factory.clone();
+                let actor_tx = actor_tx.clone();
                 async move |req: InitializeRequest,
                             responder: Responder<InitializeResponse>,
                             cx: ConnectionTo<agent_client_protocol::Client>| {
-                    let state = state.clone();
-                    let factory = factory.clone();
+                    let actor_tx = actor_tx.clone();
                     cx.spawn(async move {
-                        let response = handle_initialize(req, &state, factory.as_ref())
-                            .await
-                            .map_err(|e| agent_client_protocol::Error::from(&e))?;
-                        responder.respond(response)
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        let _ = actor_tx.send(DaemonMessage::Initialize {
+                            req,
+                            reply: reply_tx,
+                        });
+                        match reply_rx.await {
+                            Ok(Ok(response)) => responder.respond(response),
+                            Ok(Err(e)) => {
+                                responder.respond_with_error(agent_client_protocol::Error::from(&e))
+                            }
+                            Err(_) => responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("actor channel closed"),
+                            ),
+                        }
                     })?;
                     Ok(())
                 }
             },
             on_receive_request!(),
         )
-        // ANCHOR: handle-session-list
         .on_receive_request(
             {
-                let state = state.clone();
+                let actor_tx = actor_tx.clone();
                 async move |req: ListSessionsRequest,
                             responder: Responder<ListSessionsResponse>,
-                            _cx: ConnectionTo<agent_client_protocol::Client>| {
-                    let state = state.lock().unwrap();
-                    let sessions = state.list_sessions_by_cwd(req.cwd.as_deref());
-                    let session_infos: Vec<SessionInfo> = sessions
-                        .into_iter()
-                        .map(|s| {
-                            SessionInfo::new(s.session_id.clone(), s.cwd.clone())
-                                .updated_at(s.updated_at.to_rfc3339())
-                        })
-                        .collect();
-                    responder.respond(ListSessionsResponse::new(session_infos))
+                            cx: ConnectionTo<agent_client_protocol::Client>| {
+                    let actor_tx = actor_tx.clone();
+                    cx.spawn(async move {
+                        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                        let _ = actor_tx.send(DaemonMessage::ListSessions {
+                            req,
+                            reply: reply_tx,
+                        });
+                        match reply_rx.await {
+                            Ok(response) => responder.respond(response),
+                            Err(_) => responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("actor channel closed"),
+                            ),
+                        }
+                    })?;
+                    Ok(())
                 }
             },
             on_receive_request!(),
         )
-        // ANCHOR_END: handle-session-list
-        // ANCHOR: dispatch-session-new
         .on_receive_request(
             {
-                let state = state.clone();
-                let sessions = sessions.clone();
-                let state_path = state_path.clone();
+                let actor_tx = actor_tx.clone();
+                let factory = factory.clone();
                 let active_session_id = active_session_id.clone();
-                let client_cancel = client_cancel.clone();
                 async move |req: NewSessionRequest,
                             responder: Responder<NewSessionResponse>,
                             cx: ConnectionTo<agent_client_protocol::Client>| {
-                    let state = state.clone();
-                    let sessions = sessions.clone();
-                    let state_path = state_path.clone();
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
                     let active_session_id = active_session_id.clone();
-                    let client_cancel = client_cancel.clone();
                     let cx2 = cx.clone();
                     cx.spawn(async move {
-                        let result = sessions
-                            .handle_new_session(req, &state, &state_path, &cx2)
-                            .await;
+                        let result = handle_session_new(
+                            req,
+                            &cx2,
+                            &actor_tx,
+                            factory.as_ref(),
+                            send_guidelines,
+                        )
+                        .await;
                         match result {
                             Ok(response) => {
                                 let sid = response.session_id.0.to_string();
-                                *active_session_id.lock().unwrap() = Some(sid.clone());
-                                sessions.register_client_cancel(&sid, client_cancel);
+                                *active_session_id.lock().unwrap() = Some(sid);
                                 responder.respond(response)
                             }
                             Err(e) => {
@@ -282,33 +273,24 @@ async fn handle_client(
             },
             on_receive_request!(),
         )
-        // ANCHOR_END: dispatch-session-new
-        // ANCHOR: dispatch-session-load
         .on_receive_request(
             {
-                let state = state.clone();
-                let sessions = sessions.clone();
-                let state_path = state_path.clone();
+                let actor_tx = actor_tx.clone();
+                let factory = factory.clone();
                 let active_session_id = active_session_id.clone();
-                let client_cancel = client_cancel.clone();
                 async move |req: LoadSessionRequest,
                             responder: Responder<LoadSessionResponse>,
                             cx: ConnectionTo<agent_client_protocol::Client>| {
-                    let state = state.clone();
-                    let sessions = sessions.clone();
-                    let state_path = state_path.clone();
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
                     let active_session_id = active_session_id.clone();
-                    let client_cancel = client_cancel.clone();
-                    let sid = req.session_id.0.to_string();
                     let cx2 = cx.clone();
                     cx.spawn(async move {
-                        let result = sessions
-                            .handle_load_session(req, &state, &state_path, &cx2)
-                            .await;
+                        let result =
+                            handle_session_load(req, &cx2, &actor_tx, factory.as_ref()).await;
                         match result {
-                            Ok(response) => {
-                                *active_session_id.lock().unwrap() = Some(sid.clone());
-                                sessions.register_client_cancel(&sid, client_cancel);
+                            Ok((response, sid)) => {
+                                *active_session_id.lock().unwrap() = Some(sid);
                                 responder.respond(response)
                             }
                             Err(e) => {
@@ -321,28 +303,24 @@ async fn handle_client(
             },
             on_receive_request!(),
         )
-        // ANCHOR_END: dispatch-session-load
         .on_receive_request(
             {
-                let state = state.clone();
-                let sessions = sessions.clone();
+                let actor_tx = actor_tx.clone();
+                let factory = factory.clone();
                 let active_session_id = active_session_id.clone();
-                let client_cancel = client_cancel.clone();
                 async move |req: ResumeSessionRequest,
                             responder: Responder<ResumeSessionResponse>,
                             cx: ConnectionTo<agent_client_protocol::Client>| {
-                    let state = state.clone();
-                    let sessions = sessions.clone();
+                    let actor_tx = actor_tx.clone();
+                    let factory = factory.clone();
                     let active_session_id = active_session_id.clone();
-                    let client_cancel = client_cancel.clone();
-                    let sid = req.session_id.0.to_string();
                     let cx2 = cx.clone();
                     cx.spawn(async move {
-                        let result = sessions.handle_resume_session(req, &state, &cx2).await;
+                        let result =
+                            handle_session_resume(req, &cx2, &actor_tx, factory.as_ref()).await;
                         match result {
-                            Ok(response) => {
-                                *active_session_id.lock().unwrap() = Some(sid.clone());
-                                sessions.register_client_cancel(&sid, client_cancel);
+                            Ok((response, sid)) => {
+                                *active_session_id.lock().unwrap() = Some(sid);
                                 responder.respond(response)
                             }
                             Err(e) => {
@@ -358,14 +336,13 @@ async fn handle_client(
         .connect_to(transport)
         .await?;
 
-    // ANCHOR: client-disconnect
-    // T037: Connection closed — trigger disconnect_client
     let session_id = active_session_id.lock().unwrap().clone();
     if let Some(ref sid) = session_id {
         tracing::debug!(session_id = sid, "client disconnected");
-        sessions.disconnect_client(sid);
+        let _ = actor_tx.send(DaemonMessage::ClientDisconnected {
+            session_id: sid.clone(),
+        });
     }
-    // ANCHOR_END: client-disconnect
 
     if let Some(tx) = &lifecycle_tx {
         let _ = tx.send(LifecycleEvent::ClientDisconnected { session_id });
@@ -374,40 +351,203 @@ async fn handle_client(
     Ok(())
 }
 
-// ANCHOR: handle-initialize
-async fn handle_initialize(
-    req: InitializeRequest,
-    state: &Mutex<DaemonState>,
+// ---------------------------------------------------------------------------
+// Session handlers — run inside cx.spawn(...) so block_task() is safe
+// ---------------------------------------------------------------------------
+
+async fn handle_session_new(
+    req: NewSessionRequest,
+    client_cx: &ConnectionTo<agent_client_protocol::Client>,
+    actor_tx: &mpsc::UnboundedSender<DaemonMessage>,
     factory: &dyn AgentFactory,
-) -> Result<InitializeResponse, Error> {
-    let caps_value =
-        serde_json::to_value(&req.client_capabilities).unwrap_or(serde_json::Value::Null);
-
-    {
-        let state_guard = state.lock().unwrap();
-        if let Some(cached) = &state_guard.capabilities_cache
-            && cached.matches(&caps_value)
-        {
-            let response: InitializeResponse = serde_json::from_value(cached.response.clone())
-                .map_err(|e| Error::AgentSpawn(format!("corrupt capabilities cache: {e}")))?;
-            return Ok(response);
-        }
+    send_guidelines: bool,
+) -> Result<NewSessionResponse, Error> {
+    if !req.cwd.is_absolute() || !req.cwd.exists() {
+        return Err(Error::InvalidCwd { path: req.cwd });
     }
 
-    let response = AgentManager::get_capabilities(&req, factory).await?;
+    let agent_cx =
+        AgentManager::spawn_agent_connection(client_cx, factory, "", &req.cwd, &req.mcp_servers)?;
+    AgentManager::initialize_agent(&agent_cx).await?;
+    let agent_response =
+        AgentManager::new_session_on_agent(&agent_cx, &req.cwd, req.mcp_servers).await?;
+    let session_id = agent_response.session_id.0.to_string();
 
-    let response_value = serde_json::to_value(&response).unwrap_or(serde_json::Value::Null);
-    {
-        let mut state_guard = state.lock().unwrap();
-        state_guard.capabilities_cache = Some(crate::state::CachedCapabilities {
-            client_capabilities_hash: crate::state::CachedCapabilities::hash_capabilities(
-                &caps_value,
-            ),
-            response: response_value,
-        });
-        let _ = state_guard.save(&DaemonState::state_path());
+    if send_guidelines {
+        use agent_client_protocol::schema::{ContentBlock, PromptRequest, SessionId, TextContent};
+        static GUIDELINES: &str = include_str!("guidelines.md");
+        let guidelines_prompt = PromptRequest::new(
+            SessionId::new(session_id.as_str()),
+            vec![ContentBlock::Text(TextContent::new(GUIDELINES))],
+        );
+        agent_cx
+            .send_request(guidelines_prompt)
+            .block_task()
+            .await
+            .map_err(|e| Error::AgentSpawn(format!("guidelines delivery failed: {e}")))?;
     }
 
-    Ok(response)
+    // Install forwarders BEFORE returning the response — the client may send
+    // a prompt immediately after receiving the session/new response.
+    install_agent_forwarder(&agent_cx, &session_id, actor_tx.clone())?;
+    install_client_forwarder(client_cx, &session_id, actor_tx.clone())?;
+
+    let _ = actor_tx.send(DaemonMessage::SessionCreated {
+        session_id: session_id.clone(),
+        cwd: req.cwd,
+        client_cx: client_cx.clone(),
+        agent_cx,
+    });
+
+    Ok(NewSessionResponse::new(session_id))
 }
-// ANCHOR_END: handle-initialize
+
+async fn handle_session_load(
+    req: LoadSessionRequest,
+    client_cx: &ConnectionTo<agent_client_protocol::Client>,
+    actor_tx: &mpsc::UnboundedSender<DaemonMessage>,
+    factory: &dyn AgentFactory,
+) -> Result<(LoadSessionResponse, String), Error> {
+    let session_id = req.session_id.0.to_string();
+
+    // Ask the actor about session state
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let _ = actor_tx.send(DaemonMessage::QuerySessionState {
+        session_id: session_id.clone(),
+        reply: reply_tx,
+    });
+    let info = reply_rx
+        .await
+        .map_err(|_| Error::AgentSpawn("actor channel closed".into()))?
+        .ok_or_else(|| Error::SessionNotFound(session_id.clone()))?;
+
+    let new_agent_cx = if info.agent_dead {
+        let agent_cx = AgentManager::spawn_agent_connection(
+            client_cx,
+            factory,
+            &session_id,
+            &info.cwd,
+            &req.mcp_servers,
+        )?;
+        AgentManager::initialize_agent(&agent_cx).await?;
+
+        let replay_buffer: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        agent_cx
+            .add_dynamic_handler(ReplayCapture::new(replay_buffer.clone()))
+            .map_err(|e| Error::AgentSpawn(format!("replay capture: {e}")))?
+            .run_indefinitely();
+
+        AgentManager::load_session_on_agent(&agent_cx, &session_id, &info.cwd, req.mcp_servers)
+            .await?;
+
+        {
+            let buf = replay_buffer.lock().unwrap();
+            for msg in buf.iter() {
+                if let Ok(notif) = serde_json::from_value::<SessionNotification>(msg.clone()) {
+                    let _ = client_cx.send_notification(notif);
+                }
+            }
+        }
+
+        install_agent_forwarder(&agent_cx, &session_id, actor_tx.clone())?;
+        Some(agent_cx)
+    } else {
+        None
+    };
+
+    // Install client forwarder BEFORE returning the response
+    install_client_forwarder(client_cx, &session_id, actor_tx.clone())?;
+
+    let _ = actor_tx.send(DaemonMessage::SessionReconnected {
+        session_id: session_id.clone(),
+        client_cx: client_cx.clone(),
+        agent_cx: new_agent_cx,
+        replay_to_client: !info.agent_dead,
+    });
+
+    Ok((LoadSessionResponse::new(), session_id))
+}
+
+async fn handle_session_resume(
+    req: ResumeSessionRequest,
+    client_cx: &ConnectionTo<agent_client_protocol::Client>,
+    actor_tx: &mpsc::UnboundedSender<DaemonMessage>,
+    factory: &dyn AgentFactory,
+) -> Result<(ResumeSessionResponse, String), Error> {
+    let session_id = req.session_id.0.to_string();
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let _ = actor_tx.send(DaemonMessage::QuerySessionState {
+        session_id: session_id.clone(),
+        reply: reply_tx,
+    });
+    let info = reply_rx
+        .await
+        .map_err(|_| Error::AgentSpawn("actor channel closed".into()))?
+        .ok_or_else(|| Error::SessionNotFound(session_id.clone()))?;
+
+    let new_agent_cx = if info.agent_dead {
+        let agent_cx = AgentManager::spawn_agent_connection(
+            client_cx,
+            factory,
+            &session_id,
+            &info.cwd,
+            &req.mcp_servers,
+        )?;
+        AgentManager::initialize_agent(&agent_cx).await?;
+        AgentManager::load_session_on_agent(&agent_cx, &session_id, &info.cwd, req.mcp_servers)
+            .await?;
+        install_agent_forwarder(&agent_cx, &session_id, actor_tx.clone())?;
+        Some(agent_cx)
+    } else {
+        None
+    };
+
+    install_client_forwarder(client_cx, &session_id, actor_tx.clone())?;
+
+    let _ = actor_tx.send(DaemonMessage::SessionReconnected {
+        session_id: session_id.clone(),
+        client_cx: client_cx.clone(),
+        agent_cx: new_agent_cx,
+        replay_to_client: false,
+    });
+
+    Ok((ResumeSessionResponse::new(), session_id))
+}
+
+// ---------------------------------------------------------------------------
+// ReplayCapture — captures notifications during session/load for replay
+// ---------------------------------------------------------------------------
+
+struct ReplayCapture {
+    buffer: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+impl ReplayCapture {
+    fn new(buffer: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl HandleDispatchFrom<agent_client_protocol::Agent> for ReplayCapture {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _agent_cx: ConnectionTo<agent_client_protocol::Agent>,
+    ) -> agent_client_protocol::schema::Result<Handled<Dispatch>> {
+        if let Dispatch::Notification(ref notif) = message
+            && let Ok(value) = serde_json::to_value(notif)
+        {
+            self.buffer.lock().unwrap().push(value);
+        }
+        Ok(Handled::No {
+            message,
+            retry: false,
+        })
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "ReplayCapture"
+    }
+}

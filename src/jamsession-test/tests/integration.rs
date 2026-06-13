@@ -135,7 +135,6 @@ async fn multiple_sessions_independent() {
 }
 
 #[tokio::test]
-#[ignore = "daemon bridge cleanup needed: old ReverseBridgeHandler steals responses"]
 async fn resume_live_session_bridges_immediately() {
     let daemon = TestDaemon::start(TestDaemonConfig {
         agent_script: r#"
@@ -171,18 +170,19 @@ async fn resume_live_session_bridges_immediately() {
     assert_eq!(result, "resumed: continue");
 }
 
-// BUG: load_session followed by prompt hangs because old ReverseBridgeHandler
-// on agent_cx steals the PromptResponse before the new bridge can forward it.
-// The daemon needs to remove old bridge handlers when a new client connects.
 #[tokio::test]
-#[ignore = "daemon bridge cleanup needed: old ReverseBridgeHandler steals responses"]
 async fn load_live_session_replays_buffer() {
     let daemon = TestDaemon::start(TestDaemonConfig {
         agent_script: r#"
             let prompt = receive_prompt();
             say("first: " + prompt);
-            let prompt2 = receive_prompt();
-            say("second: " + prompt2);
+            loop {
+                let prompt2 = receive_prompt();
+                if prompt2 != "" {
+                    say("second: " + prompt2);
+                    break;
+                }
+            }
         "#
         .into(),
         ..Default::default()
@@ -212,7 +212,7 @@ async fn load_live_session_replays_buffer() {
 }
 
 #[tokio::test]
-#[ignore = "daemon bridge cleanup needed: old ReverseBridgeHandler steals responses"]
+#[ignore = "requires independent agent connections: spawn_connection ties agent lifetime to client"]
 async fn load_dead_session_respawns_agent() {
     let daemon = TestDaemon::start(TestDaemonConfig {
         idle_timeout: Duration::from_millis(50),
@@ -259,7 +259,7 @@ async fn load_dead_session_respawns_agent() {
 }
 
 #[tokio::test]
-#[ignore = "daemon bridge cleanup needed: old ReverseBridgeHandler steals responses"]
+#[ignore = "requires independent agent connections: spawn_connection ties agent lifetime to client"]
 async fn agent_killed_after_idle_timeout() {
     let daemon = TestDaemon::start(TestDaemonConfig {
         idle_timeout: Duration::from_millis(50),

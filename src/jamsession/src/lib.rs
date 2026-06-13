@@ -1,5 +1,5 @@
+pub mod actor;
 pub mod agent;
-pub mod bridge;
 pub mod daemon;
 pub mod error;
 pub mod logging;
