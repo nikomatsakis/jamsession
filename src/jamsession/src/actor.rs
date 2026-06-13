@@ -18,29 +18,36 @@ use crate::state::{DaemonState, SessionRecord};
 // DaemonMessage — inputs to the actor
 // ---------------------------------------------------------------------------
 
-pub enum DaemonMessage {
-    // --- Request/reply (actor does no blocking I/O) ---
+pub(super) enum DaemonMessage {
+    /// Client sent `initialize` — resolve capabilities from cache or probe a temp agent.
+    /// Reply carries the agent's advertised capabilities.
     Initialize {
         req: InitializeRequest,
         reply: oneshot::Sender<Result<InitializeResponse, Error>>,
     },
+    /// Client sent `session/list` — return known sessions, optionally filtered by cwd.
     ListSessions {
         req: ListSessionsRequest,
         reply: oneshot::Sender<ListSessionsResponse>,
     },
-    /// Query whether a session's agent is dead (for load/resume decisions).
+    /// Client task asks whether the agent for a session is alive or dead so it can
+    /// decide whether to spawn a new agent (dead) or reuse the existing one (alive).
     QuerySessionState {
         session_id: String,
         reply: oneshot::Sender<Option<SessionLivenessInfo>>,
     },
 
-    // --- Registration (client task did the heavy lifting, actor records state) ---
+    /// Client task completed `session/new`: agent is spawned, initialized, and bridged.
+    /// Actor persists the session record and stores connection handles.
     SessionCreated {
         session_id: String,
         cwd: PathBuf,
         client_cx: ConnectionTo<agent_client_protocol::Client>,
         agent_cx: ConnectionTo<agent_client_protocol::Agent>,
     },
+    /// Client task completed `session/load` or `session/resume`: actor updates the
+    /// stored client_cx (and optionally agent_cx if a new agent was spawned).
+    /// When `replay_to_client` is true the actor replays buffered notifications.
     SessionReconnected {
         session_id: String,
         client_cx: ConnectionTo<agent_client_protocol::Client>,
@@ -48,103 +55,115 @@ pub enum DaemonMessage {
         replay_to_client: bool,
     },
 
-    // --- Routing messages (fire-and-forget) ---
+    /// A dispatch arrived from a client (post-session-establishment).
+    /// Actor forwards it to the session's agent via `send_proxied_message`.
     ClientMessage {
         session_id: String,
         dispatch: Dispatch,
     },
+    /// A dispatch arrived from an agent (response or notification).
+    /// Actor buffers notifications, updates lifecycle, and forwards to the client.
     AgentMessage {
         session_id: String,
         dispatch: Dispatch,
     },
 
-    // --- Lifecycle events (fire-and-forget) ---
-    ClientDisconnected {
-        session_id: String,
-    },
-    AgentExited {
-        session_id: String,
-    },
-    AgentQuiescent {
-        session_id: String,
-        generation: u64,
-    },
-    IdleTimeoutElapsed {
-        session_id: String,
-        generation: u64,
-    },
+    /// The client's ACP connection closed. Actor drops client_cx and starts
+    /// the quiescence timer (generation-guarded).
+    ClientDisconnected { session_id: String },
+    /// The agent process exited unexpectedly. Actor marks the session dead.
+    AgentExited { session_id: String },
+    /// Quiescence window elapsed without activity. If generation still matches,
+    /// actor transitions to Quiescent and starts the idle timer.
+    AgentQuiescent { session_id: String, generation: u64 },
+    /// Idle timeout elapsed. If generation still matches, actor kills the agent
+    /// (drops agent_cx, clears buffer).
+    IdleTimeoutElapsed { session_id: String, generation: u64 },
+    /// Periodic sweep: remove sessions whose cwd no longer exists on disk.
     CwdHealthCheck,
 }
 
 /// Info returned by QuerySessionState so the client task can decide
 /// whether to spawn a new agent or reuse the existing one.
-pub struct SessionLivenessInfo {
-    pub agent_dead: bool,
-    pub cwd: PathBuf,
+pub(super) struct SessionLivenessInfo {
+    pub(super) agent_dead: bool,
+    pub(super) cwd: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
 // LifecycleState
 // ---------------------------------------------------------------------------
 
+/// Per-session agent lifecycle. Transitions are driven by DaemonMessage processing.
+///
+/// ```text
+/// AgentDead → Spawning → Active → TurnComplete → Quiescent → IdleTimerRunning → AgentDead
+///                          ↑ (on_message / on_client_connect resets to Active)
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LifecycleState {
+enum LifecycleState {
+    /// No agent process running. Next: spawn on demand.
     AgentDead,
+    /// Agent process launched, awaiting initialize response.
     Spawning,
+    /// Agent initialized and exchanging messages with a client.
     Active,
+    /// Agent finished a turn (prompt/end received), no new activity yet.
     TurnComplete,
+    /// Pipe silent for the quiescence window; idle timer started.
     Quiescent,
+    /// Idle timer running; if it fires without interruption, agent is killed.
     IdleTimerRunning,
 }
 
 impl LifecycleState {
-    pub fn on_message(self) -> Self {
+    fn on_message(self) -> Self {
         match self {
             Self::AgentDead => self,
             _ => Self::Active,
         }
     }
 
-    pub fn on_turn_complete(self) -> Option<Self> {
+    fn on_turn_complete(self) -> Option<Self> {
         match self {
             Self::Active => Some(Self::TurnComplete),
             _ => None,
         }
     }
 
-    pub fn on_quiescence(self) -> Option<Self> {
+    fn on_quiescence(self) -> Option<Self> {
         match self {
             Self::TurnComplete => Some(Self::Quiescent),
             _ => None,
         }
     }
 
-    pub fn on_idle_timer_start(self) -> Option<Self> {
+    fn on_idle_timer_start(self) -> Option<Self> {
         match self {
             Self::Quiescent => Some(Self::IdleTimerRunning),
             _ => None,
         }
     }
 
-    pub fn on_spawn_request(self) -> Option<Self> {
+    fn on_spawn_request(self) -> Option<Self> {
         match self {
             Self::AgentDead => Some(Self::Spawning),
             _ => None,
         }
     }
 
-    pub fn on_spawn_complete(self) -> Option<Self> {
+    fn on_spawn_complete(self) -> Option<Self> {
         match self {
             Self::Spawning => Some(Self::Active),
             _ => None,
         }
     }
 
-    pub fn on_kill(self) -> Self {
+    fn on_kill(self) -> Self {
         Self::AgentDead
     }
 
-    pub fn on_client_connect(self) -> Self {
+    fn on_client_connect(self) -> Self {
         match self {
             Self::AgentDead => self,
             _ => Self::Active,
@@ -156,14 +175,22 @@ impl LifecycleState {
 // LiveSession
 // ---------------------------------------------------------------------------
 
-pub struct LiveSession {
-    pub record: SessionRecord,
-    pub lifecycle_state: LifecycleState,
-    pub client_cx: Option<ConnectionTo<agent_client_protocol::Client>>,
-    pub agent_cx: Option<ConnectionTo<agent_client_protocol::Agent>>,
-    pub buffer: Vec<serde_json::Value>,
-    pub generation: u64,
-    pub respawn_attempted: bool,
+/// In-memory state for one session, owned exclusively by the actor.
+/// Combines the persistent record with runtime handles and lifecycle tracking.
+struct LiveSession {
+    record: SessionRecord,
+    lifecycle_state: LifecycleState,
+    /// Handle to the currently-connected client (None when disconnected).
+    client_cx: Option<ConnectionTo<agent_client_protocol::Client>>,
+    /// Handle to the agent process (None when dead/killed).
+    agent_cx: Option<ConnectionTo<agent_client_protocol::Agent>>,
+    /// Buffered agent notifications for session/load replay.
+    buffer: Vec<serde_json::Value>,
+    /// Monotonic counter bumped on any state change; timer messages carry the
+    /// generation they were spawned at — stale timers are discarded on mismatch.
+    generation: u64,
+    /// Guards against infinite respawn loops on repeated agent crashes.
+    respawn_attempted: bool,
 }
 
 impl LiveSession {
@@ -189,19 +216,25 @@ impl LiveSession {
 // DaemonActor
 // ---------------------------------------------------------------------------
 
-pub struct DaemonActor {
+/// Central actor: owns all session state, processes DaemonMessages sequentially.
+/// Spawned as a single `tokio::spawn` task — no internal concurrency, no mutexes.
+pub(super) struct DaemonActor {
     sessions: HashMap<String, LiveSession>,
+    /// Persistent state (session records + capabilities cache), saved to disk on mutation.
     state: DaemonState,
     state_path: PathBuf,
+    /// Used only for the `Initialize` cold-cache path (temp agent probe).
     factory: Arc<dyn AgentFactory>,
     idle_timeout: std::time::Duration,
     quiescence_timeout: std::time::Duration,
+    /// Observer channel for lifecycle events (tests, tracing).
     event_tx: Option<LifecycleEventSender>,
+    /// Clone given to spawned timer tasks so they can send back to this actor.
     actor_tx: mpsc::UnboundedSender<DaemonMessage>,
 }
 
 impl DaemonActor {
-    pub fn new(
+    pub(super) fn new(
         state: DaemonState,
         state_path: PathBuf,
         factory: Arc<dyn AgentFactory>,
@@ -233,7 +266,7 @@ impl DaemonActor {
         }
     }
 
-    pub async fn run(&mut self, mut rx: mpsc::UnboundedReceiver<DaemonMessage>) {
+    pub(super) async fn run(&mut self, mut rx: mpsc::UnboundedReceiver<DaemonMessage>) {
         while let Some(msg) = rx.recv().await {
             match msg {
                 DaemonMessage::Initialize { req, reply } => {
@@ -663,7 +696,7 @@ impl HandleDispatchFrom<agent_client_protocol::Agent> for AgentForwarder {
     }
 }
 
-pub fn install_client_forwarder(
+pub(super) fn install_client_forwarder(
     client_cx: &ConnectionTo<agent_client_protocol::Client>,
     session_id: &str,
     actor_tx: mpsc::UnboundedSender<DaemonMessage>,
@@ -678,7 +711,7 @@ pub fn install_client_forwarder(
     Ok(())
 }
 
-pub fn install_agent_forwarder(
+pub(super) fn install_agent_forwarder(
     agent_cx: &ConnectionTo<agent_client_protocol::Agent>,
     session_id: &str,
     actor_tx: mpsc::UnboundedSender<DaemonMessage>,

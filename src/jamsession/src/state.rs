@@ -8,28 +8,28 @@ use serde::{Deserialize, Serialize};
 use crate::error::StateError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DaemonState {
-    pub version: u32,
-    pub sessions: Vec<SessionRecord>,
-    pub capabilities_cache: Option<CachedCapabilities>,
+pub(super) struct DaemonState {
+    version: u32,
+    pub(super) sessions: Vec<SessionRecord>,
+    pub(super) capabilities_cache: Option<CachedCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRecord {
-    pub session_id: String,
-    pub cwd: PathBuf,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+pub(super) struct SessionRecord {
+    pub(super) session_id: String,
+    pub(super) cwd: PathBuf,
+    pub(super) created_at: DateTime<Utc>,
+    pub(super) updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedCapabilities {
-    pub client_capabilities_hash: u64,
-    pub response: serde_json::Value,
+pub(super) struct CachedCapabilities {
+    pub(super) client_capabilities_hash: u64,
+    pub(super) response: serde_json::Value,
 }
 
 impl DaemonState {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             version: 1,
             sessions: Vec::new(),
@@ -37,14 +37,14 @@ impl DaemonState {
         }
     }
 
-    pub fn state_path() -> PathBuf {
+    fn state_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".jamsession")
             .join("state.json")
     }
 
-    pub fn load(path: &Path) -> Self {
+    pub(super) fn load(path: &Path) -> Self {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => return Self::new(),
@@ -55,7 +55,7 @@ impl DaemonState {
         })
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), StateError> {
+    pub(super) fn save(&self, path: &Path) -> Result<(), StateError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(StateError::Write)?;
         }
@@ -66,35 +66,35 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn find_session(&self, session_id: &str) -> Option<&SessionRecord> {
+    pub(super) fn find_session(&self, session_id: &str) -> Option<&SessionRecord> {
         self.sessions.iter().find(|s| s.session_id == session_id)
     }
 
-    pub fn list_sessions_by_cwd(&self, cwd: Option<&Path>) -> Vec<&SessionRecord> {
+    pub(super) fn list_sessions_by_cwd(&self, cwd: Option<&Path>) -> Vec<&SessionRecord> {
         match cwd {
             Some(cwd) => self.sessions.iter().filter(|s| s.cwd == cwd).collect(),
             None => self.sessions.iter().collect(),
         }
     }
 
-    pub fn add_session(&mut self, record: SessionRecord) {
+    pub(super) fn add_session(&mut self, record: SessionRecord) {
         self.sessions.push(record);
     }
 
-    pub fn remove_session(&mut self, session_id: &str) {
+    pub(super) fn remove_session(&mut self, session_id: &str) {
         self.sessions.retain(|s| s.session_id != session_id);
     }
 }
 
 impl CachedCapabilities {
-    pub fn hash_capabilities(capabilities: &serde_json::Value) -> u64 {
+    pub(super) fn hash_capabilities(capabilities: &serde_json::Value) -> u64 {
         let mut hasher = DefaultHasher::new();
         let canonical = serde_json::to_string(capabilities).unwrap_or_default();
         canonical.hash(&mut hasher);
         hasher.finish()
     }
 
-    pub fn matches(&self, capabilities: &serde_json::Value) -> bool {
+    pub(super) fn matches(&self, capabilities: &serde_json::Value) -> bool {
         Self::hash_capabilities(capabilities) == self.client_capabilities_hash
     }
 }

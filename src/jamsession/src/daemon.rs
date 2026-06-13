@@ -31,7 +31,7 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn new(state_path: &std::path::Path) -> Self {
+    fn new(state_path: &std::path::Path) -> Self {
         Self {
             socket_path: Self::socket_path(),
             state_path: state_path.to_path_buf(),
@@ -80,7 +80,7 @@ impl Daemon {
         self
     }
 
-    pub fn socket_path() -> PathBuf {
+    fn socket_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".jamsession")
@@ -155,7 +155,7 @@ impl Daemon {
         }
     }
 
-    pub async fn shutdown(&self) {
+    async fn shutdown(&self) {
         let _ = tokio::fs::remove_file(&self.socket_path).await;
         tracing::info!("daemon shut down");
     }

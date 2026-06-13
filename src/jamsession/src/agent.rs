@@ -24,12 +24,12 @@ pub trait AgentFactory: Send + Sync + 'static {
 }
 
 /// Production factory: spawns agent via acpr registry.
-pub struct AcprFactory {
+pub(super) struct AcprFactory {
     name: String,
 }
 
 impl AcprFactory {
-    pub fn new(name: impl Into<String>) -> Self {
+    fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
@@ -52,12 +52,12 @@ impl AgentFactory for AcprFactory {
 }
 
 /// Test/dev factory: spawns agent from a binary path.
-pub struct BinaryFactory {
+struct BinaryFactory {
     path: std::path::PathBuf,
 }
 
 impl BinaryFactory {
-    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+    fn new(path: impl Into<std::path::PathBuf>) -> Self {
         Self { path: path.into() }
     }
 }
@@ -76,11 +76,11 @@ impl AgentFactory for BinaryFactory {
     }
 }
 
-pub struct AgentManager;
+pub(super) struct AgentManager;
 
 impl AgentManager {
     /// Probe agent capabilities by spawning a short-lived "temp agent" (FR-008).
-    pub async fn get_capabilities(
+    pub(super) async fn get_capabilities(
         req: &InitializeRequest,
         factory: &dyn AgentFactory,
     ) -> Result<InitializeResponse, Error> {
@@ -110,7 +110,7 @@ impl AgentManager {
     }
 
     /// Spawn an agent subprocess and return the connection handle.
-    pub fn spawn_agent_connection(
+    pub(super) fn spawn_agent_connection(
         client_cx: &ConnectionTo<agent_client_protocol::Client>,
         factory: &dyn AgentFactory,
         session_id: &str,
@@ -127,7 +127,7 @@ impl AgentManager {
     }
 
     /// Initialize the ACP protocol on an agent connection.
-    pub async fn initialize_agent(
+    pub(super) async fn initialize_agent(
         agent_cx: &ConnectionTo<agent_client_protocol::Agent>,
     ) -> Result<InitializeResponse, Error> {
         agent_cx
@@ -138,7 +138,7 @@ impl AgentManager {
     }
 
     /// Send session/new to an initialized agent.
-    pub async fn new_session_on_agent(
+    pub(super) async fn new_session_on_agent(
         agent_cx: &ConnectionTo<agent_client_protocol::Agent>,
         cwd: &std::path::Path,
         mcp_servers: Vec<McpServer>,
@@ -151,7 +151,7 @@ impl AgentManager {
     }
 
     /// Send session/load to an initialized agent.
-    pub async fn load_session_on_agent(
+    pub(super) async fn load_session_on_agent(
         agent_cx: &ConnectionTo<agent_client_protocol::Agent>,
         session_id: &str,
         cwd: &std::path::Path,
@@ -167,7 +167,7 @@ impl AgentManager {
         Ok(())
     }
 
-    pub async fn kill_agent(pid: u32) {
+    async fn kill_agent(pid: u32) {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
 
