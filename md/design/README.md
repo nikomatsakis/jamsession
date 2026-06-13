@@ -6,7 +6,16 @@ This section documents the internal architecture of Jamsession for contributors 
 
 Start with the **[daemon actor architecture](./daemon_actor.md)** — it explains the central pattern (single actor task owns all state, everything else communicates via messages) and includes the full message type definitions pulled live from the source.
 
-The **[sequence diagrams](./sequence_diagrams.md)** show the major flows end-to-end (new session, reconnect, idle spin-down) with links to the implementing code via `{anchor}` references.
+Then walk through the flow pages to see how each operation moves through the code:
+
+- **[New session](./flow-new-session.md)** — connect, initialize, create session, bridge
+- **[Reconnect](./flow-reconnect.md)** — load (dead/alive agent) and resume
+- **[Message bridge](./flow-message-bridge.md)** — steady-state bidirectional routing
+- **[Idle spin-down](./flow-idle-spindown.md)** — quiescence + idle timeout → agent kill
+- **[Agent crash](./flow-agent-crash.md)** — detection and recovery
+- **[CWD health check](./flow-cwd-health.md)** — periodic cleanup of deleted directories
+
+Each page includes `{anchor}` code references that link directly to the source.
 
 ## Key concepts
 
